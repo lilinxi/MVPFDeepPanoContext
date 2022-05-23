@@ -1,3 +1,4 @@
+import cv2
 import torch
 import torch.nn as nn
 import numpy as np
@@ -11,6 +12,9 @@ from configs.data_config import IG56CLASSES, PC2IG, WIMR11CLASSES
 from models.registers import MODULES
 from utils.render_utils import is_obj_valid, seg2obj
 from utils.detector_utils import nms, nms_all_class
+
+import proto_gen.detect_pb2
+import client.object_detection_client
 
 
 @MODULES.register_module
@@ -33,6 +37,152 @@ class Detector2D:
         self.predictor = DefaultPredictor(cfg_detectron)
 
     def __call__(self, image_np, camera):
+        est_scenes = []
+
+        for image, c in zip(image_np, camera):
+            cv2.imwrite('/tmp/tmp.png', image_np[0])
+            resp = client.object_detection_client.ObjectDetect(
+                proto_gen.detect_pb2.YoloModelRequest(
+                    image_path="/tmp/tmp.png",
+                )
+            )
+            print(resp)
+            images = [image]
+            if self.pano:
+                height, width, channel = image.shape
+                roll_width = width // 2
+                image2 = np.roll(image, roll_width, axis=1)
+                images.append(image2)
+
+            id = 0
+            objs = []
+            for i_image, image in enumerate(images):
+                output = self.predictor(image)
+                instances = output['instances'].to('cpu')
+
+                for pred in zip(
+                        instances.pred_boxes, instances.scores,
+                        instances.pred_classes, instances.pred_masks
+                ):
+                    box, score, label, mask = [p.numpy() if p.numel() > 1 else p.item() for p in pred]
+
+                    if self.real:
+                        # map label and classname to WIMR real dataset
+                        classname_wimr = WIMR11CLASSES[label]
+                        if classname_wimr not in PC2IG:
+                            continue
+                        obj = {
+                            'classname_wimr': classname_wimr,
+                            'label_wimr': label
+                        }
+                        IG_classname = PC2IG[classname_wimr]
+                        label = IG56CLASSES.index(IG_classname)
+                    else:
+                        obj = {}
+
+                    IG56CLASSES = [
+                        'basket', 'bathtub', 'bed', 'bench', 'bottom_cabinet',
+                        'bottom_cabinet_no_top', 'carpet', 'chair', 'chest',
+                        'coffee_machine', 'coffee_table', 'console_table',
+                        'cooktop', 'counter', 'crib', 'cushion', 'dishwasher',
+                        'door', 'dryer', 'fence', 'floor_lamp', 'fridge',
+                        'grandfather_clock', 'guitar', 'heater', 'laptop',
+                        'loudspeaker', 'microwave', 'mirror', 'monitor',
+                        'office_chair', 'oven', 'piano', 'picture', 'plant',
+                        'pool_table', 'range_hood', 'shelf', 'shower', 'sink',
+                        'sofa', 'sofa_chair', 'speaker_system', 'standing_tv',
+                        'stool', 'stove', 'table', 'table_lamp', 'toilet',
+                        'top_cabinet', 'towel_rack', 'trash_can', 'treadmill',
+                        'wall_clock', 'wall_mounted_tv', 'washer', 'window'
+                    ]
+
+                    obj.update({
+                        'classname': IG56CLASSES[label],
+                        'label': label,
+                        'score': score,
+                    })
+
+                    # use box as mask if mask is empty
+                    if not np.any(mask):
+                        box = np.round(box).astype(np.int)
+                        mask[box[1]:(box[3] + 1), box[0]:(box[2] + 1)] = True
+
+                    if i_image == 1:
+                        # shift rolled detection results back
+                        shift = roll_width
+                        if box[2] >= roll_width:
+                            shift *= -1
+                        box[0] += shift
+                        box[2] += shift
+                        mask = np.roll(mask, roll_width, axis=1)
+
+                    obj_info = seg2obj(mask, 1, c)
+                    if obj_info is None:
+                        continue
+                    obj.update(obj_info)
+                    # obj['bdb2d'] = {k: v for k, v in zip(('x1', 'y1', 'x2', 'y2'), np.round(box).astype(np.int))}
+                    if not is_obj_valid(obj):
+                        continue
+
+                    id += 1
+                    obj.update({
+                        'id': id,
+                        'mask': mask,
+                        'box': box
+                    })
+                    objs.append(obj)
+
+            if self.pano:
+                # prepare objects information for NMS
+                label_objs = defaultdict(lambda: defaultdict(list))
+                label_key = 'label_wimr' if self.real else 'label'
+                for i, obj in enumerate(objs):
+                    cls_objs = label_objs[obj[label_key]]
+                    cls_objs["ids"].append(obj['id'])
+                    cls_objs["boxs"].append(obj['box'])
+                    cls_objs["scores"].append(obj['score'])
+                    cls_objs["masks"].append(obj['mask'])
+                for label, cls_objs in label_objs.items():
+                    for k, v in cls_objs.items():
+                        cls_objs[k] = np.stack(v)
+
+                # run NMS on each class to merge cross-edge objects
+                nms_objs = []
+                for label, cls_objs in label_objs.items():
+                    ids, masks = nms(cls_objs, self.cf_thresh, self.nms_thresh)
+                    for id, mask in zip(ids, masks):
+                        obj = objs[id - 1]
+                        obj_info = seg2obj(mask, 1, c)
+                        if obj_info is None:
+                            continue
+                        obj.update(obj_info)
+                        obj['mask'] = mask
+                        nms_objs.append(obj)
+
+                # run NMS on all class to merge overlapped objects with different labels
+                if nms_objs:
+                    indices = nms_all_class(nms_objs, self.nms_all_thresh)
+                    objs = [nms_objs[i] for i in indices]
+                else:
+                    objs = []
+
+            # compose instance segmentation
+            seg = np.zeros(image.shape[:2], np.uint8)
+            for obj in objs:
+                seg[obj['mask']] = obj['id']
+                # remove intermedia object information
+                obj.pop('mask')
+                if 'box' in obj:
+                    obj.pop('box')
+
+            est_scenes.append({
+                'objs': objs,
+                'image_np': {'seg': seg}
+            })
+
+        return est_scenes
+
+    def __call__demo(self, image_np, camera):
         est_scenes = []
 
         for image, c in zip(image_np, camera):
@@ -107,7 +257,7 @@ class Detector2D:
 
             if self.pano:
                 # prepare objects information for NMS
-                label_objs = defaultdict(lambda :defaultdict(list))
+                label_objs = defaultdict(lambda: defaultdict(list))
                 label_key = 'label_wimr' if self.real else 'label'
                 for i, obj in enumerate(objs):
                     cls_objs = label_objs[obj[label_key]]
