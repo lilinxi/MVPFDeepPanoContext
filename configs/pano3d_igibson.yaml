@@ -141,7 +141,7 @@ test:
 log:
   vis_step: 1
   print_step: 10
-  save_mesh: False
+  save_mesh: True
   path: out/pano3d
   save_checkpoint: False
 

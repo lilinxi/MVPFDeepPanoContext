@@ -112,6 +112,9 @@ class IGSceneDataset(Pano3DDataset):
                 gt_data['objs'] = gt_scene['objs']
 
         if 'layout_estimation' in self.config['model']:
+            # Remove Alpha channel
+            if gt_scene.image_io['rgb'].shape[2] == 4:
+                gt_scene.image_io['rgb'] = gt_scene.image_io['rgb'][:, :, :3]
             # image normalization, data argumentation
             gt_data['image_tensor'] = {'rgb': self.image_transforms(gt_scene.image_io['rgb'])}
             if 'layout' in gt_scene.data:

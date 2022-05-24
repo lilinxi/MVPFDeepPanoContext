@@ -36,17 +36,10 @@ class Detector2D:
         cfg_detectron.MODEL.ROI_HEADS.SCORE_THRESH_TEST = model_config['score_thresh']
         self.predictor = DefaultPredictor(cfg_detectron)
 
-    def __call__(self, image_np, camera):
+    def __call__mvpf(self, image_np, camera):
         est_scenes = []
 
         for image, c in zip(image_np, camera):
-            cv2.imwrite('/tmp/tmp.png', image_np[0])
-            resp = client.object_detection_client.ObjectDetect(
-                proto_gen.detect_pb2.YoloModelRequest(
-                    image_path="/tmp/tmp.png",
-                )
-            )
-            print(resp)
             images = [image]
             if self.pano:
                 height, width, channel = image.shape
@@ -57,14 +50,57 @@ class Detector2D:
             id = 0
             objs = []
             for i_image, image in enumerate(images):
-                output = self.predictor(image)
-                instances = output['instances'].to('cpu')
+                cv2.imwrite('/tmp/tmp.png', image)
+                resp = client.object_detection_client.ObjectDetect(
+                    proto_gen.detect_pb2.YoloModelRequest(
+                        image_path="/tmp/tmp.png",
+                    )
+                )
+                print(resp)
 
-                for pred in zip(
-                        instances.pred_boxes, instances.scores,
-                        instances.pred_classes, instances.pred_masks
-                ):
-                    box, score, label, mask = [p.numpy() if p.numel() > 1 else p.item() for p in pred]
+                CLASSES_MAP = {
+                    0: 2,  # bed
+                    1: 33,  # painting -> picture
+                    2: 46,  # table
+                    3: 28,  # mirror
+                    4: 56,  # window
+                    6: 7,  # chair
+                    8: 40,  # sofa
+                    9: 17,  # door
+                    10: 4,  # cabinet
+                    11: 13,  # bedside -> counter
+                    12: 54,  # tv
+                    15: 6,  # rug -> carpet
+                    16: 37,  # shelf
+                }
+
+                """
+                box <class 'numpy.ndarray'> [ 941.89966  192.05006 1023.19806  286.62195]
+                score <class 'float'> 0.9999884366989136
+                label <class 'int'> 56
+                mask <class 'numpy.ndarray'> (512, 1024)
+                """
+
+                for pred in resp.detect_result_bbx_list:
+                    if pred.label not in CLASSES_MAP or pred.conf < self.cf_thresh:
+                        continue
+                    box = np.array([pred.xmin, pred.ymin, pred.xmax, pred.ymax])
+                    score = pred.conf
+                    label = CLASSES_MAP[pred.label]
+                    mask = np.full((image.shape[0], image.shape[1]), False)
+
+                    # output = self.predictor(image)
+                    # instances = output['instances'].to('cpu')
+                    #
+                    # for pred in zip(
+                    #         instances.pred_boxes, instances.scores,
+                    #         instances.pred_classes, instances.pred_masks
+                    # ):
+                    #     box, score, label, mask = [p.numpy() if p.numel() > 1 else p.item() for p in pred]
+                    print('box', type(box), box)
+                    print('score', type(score), score)
+                    print('label', type(label), label)
+                    print('mask', type(mask), mask.shape)
 
                     if self.real:
                         # map label and classname to WIMR real dataset
@@ -79,22 +115,6 @@ class Detector2D:
                         label = IG56CLASSES.index(IG_classname)
                     else:
                         obj = {}
-
-                    IG56CLASSES = [
-                        'basket', 'bathtub', 'bed', 'bench', 'bottom_cabinet',
-                        'bottom_cabinet_no_top', 'carpet', 'chair', 'chest',
-                        'coffee_machine', 'coffee_table', 'console_table',
-                        'cooktop', 'counter', 'crib', 'cushion', 'dishwasher',
-                        'door', 'dryer', 'fence', 'floor_lamp', 'fridge',
-                        'grandfather_clock', 'guitar', 'heater', 'laptop',
-                        'loudspeaker', 'microwave', 'mirror', 'monitor',
-                        'office_chair', 'oven', 'piano', 'picture', 'plant',
-                        'pool_table', 'range_hood', 'shelf', 'shower', 'sink',
-                        'sofa', 'sofa_chair', 'speaker_system', 'standing_tv',
-                        'stool', 'stove', 'table', 'table_lamp', 'toilet',
-                        'top_cabinet', 'towel_rack', 'trash_can', 'treadmill',
-                        'wall_clock', 'wall_mounted_tv', 'washer', 'window'
-                    ]
 
                     obj.update({
                         'classname': IG56CLASSES[label],
@@ -182,7 +202,7 @@ class Detector2D:
 
         return est_scenes
 
-    def __call__demo(self, image_np, camera):
+    def __call__(self, image_np, camera):
         est_scenes = []
 
         for image, c in zip(image_np, camera):

@@ -156,6 +156,9 @@ class Pano3D(BaseMethod):
             est_scene.crop_images(
                 perspective='K' not in gt_scenes[0]['camera'], short_width=Pano3DDataset.crop_width)
             for o in est_scene['objs']:
+                # Remove Alpha channel
+                if o['rgb'].shape[2] == 4:
+                    o['rgb'] = o['rgb'][:, :, :3]
                 o['rgb'] = Pano3DDataset.crop_transforms['train' if self.training else 'test'](o['rgb'])
 
             # encode class as one-hot
