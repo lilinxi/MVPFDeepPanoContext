@@ -7,6 +7,7 @@ from configs.config_utils import CONFIG
 import os
 import train, test #, demo
 
+# CUDA_VISIBLE_DEVICES=0 WANDB_MODE=dryrun python main.py configs/pano3d_igibson.yaml --model.scene_gcn.relation_adjust True --mode test --demo_path /homo/ada/da/da -- save_path /home/da/da
 
 def parse_args():
     '''PARAMETERS'''
