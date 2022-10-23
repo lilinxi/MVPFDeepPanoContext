@@ -24,7 +24,7 @@ def run(cfg):
 
     import os
     output_path = "/home/lmf/tmp/deep_output_path"
-    if not os.path.exists(output_path):
+    if os.path.exists(output_path):
         os.remove(output_path)
     f = open(output_path, "w")
     f.write(cfg.save_path)
