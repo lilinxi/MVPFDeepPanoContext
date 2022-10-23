@@ -22,6 +22,14 @@ def run(cfg):
     '''Load save path'''
     cfg.log_string('Data save path: %s' % (cfg.save_path))
 
+    import os
+    output_path = "/home/lmf/tmp/deep_output_path"
+    if not os.path.exists(output_path):
+        os.remove(output_path)
+    f = open(output_path, "w")
+    f.write(cfg.save_path)
+    f.close()
+
     '''Load device'''
     cfg.log_string('Loading device settings.')
     device = load_device(cfg)
